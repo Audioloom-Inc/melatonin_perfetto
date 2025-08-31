@@ -22,7 +22,7 @@ END_JUCE_MODULE_DECLARATION
 #endif
 
 #if PERFETTO
-
+ 
     // allow granular toggles to be defined before this file
     #ifndef PERFETTO_ENABLE_TRACE_DSP
         #define PERFETTO_ENABLE_TRACE_DSP 1
@@ -37,6 +37,8 @@ END_JUCE_MODULE_DECLARATION
     #include <juce_core/juce_core.h>
     #include <perfetto.h>
     #include <thread>
+
+    #include "../perfetto/sdk/perfetto.h"
 
 PERFETTO_DEFINE_CATEGORIES (
     perfetto::Category ("component")
