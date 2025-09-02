@@ -27,7 +27,7 @@ is_macos()   { [[ "$(uname -s)" == "Darwin" ]]; }
 is_windows() { uname -s | grep -qiE 'mingw|msys'; }
 
 ensure_absolute() {
-  local p="$1"
+  local p="$1"  
   if is_windows; then
     [[ "$p" =~ ^[A-Za-z]:[\\/].* ]] || { err "On Windows, path must be absolute like C:\\path\\to\\perfetto"; exit 2; }
   else
@@ -76,79 +76,121 @@ if is_macos; then
 fi
 
 # -----------------------------
-# Windows (Git Bash) build
+# Windows (Git Bash) build — depot_tools bootstrap + vpython3 + gn/ninja
 # -----------------------------
 if is_windows; then
   log "Detected Windows (Git Bash)."
   need_cmd git
+  need_cmd cygpath
+  need_cmd powershell.exe
 
-  VSWHERE="C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe"
-  if [[ ! -f "$VSWHERE" ]]; then
-    err "vswhere not found at: $VSWHERE
-Install Visual Studio (or Build Tools) with the C++ Desktop workload + Windows SDK."
-    exit 2
-  fi
+  # Locate vswhere (common locations)
+  VSWHERE_CANDIDATES=(
+    "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+    "/c/Program Files/Microsoft Visual Studio/Installer/vswhere.exe"
+  )
+  VSWHERE_BASH=""
+  for p in "${VSWHERE_CANDIDATES[@]}"; do
+    [[ -f "$p" ]] && { VSWHERE_BASH="$p"; break; }
+  done
+  [[ -n "$VSWHERE_BASH" ]] || { err "vswhere.exe not found. Install VS (or Build Tools) with C++ & Windows SDK."; exit 2; }
+  VSWHERE_WIN="$(cygpath -w "$VSWHERE_BASH")"
 
   DEP_DIR="$SRC/.deps"
+  mkdir -p "$DEP_DIR"
+  DEP_DIR_WIN="$(cygpath -w "$DEP_DIR")"
+  WIN_SRC="$(cygpath -w "$SRC")"
+
+  # depot_tools (keep local)
   DEPOT_DIR="$DEP_DIR/depot_tools"
   if [[ ! -d "$DEPOT_DIR" ]]; then
     log "Cloning depot_tools → $DEPOT_DIR"
-    mkdir -p "$DEP_DIR"
     git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$DEPOT_DIR"
   fi
-
-  WIN_SRC="$(cygpath -w "$SRC")"
   WIN_DEPOT_DIR="$(cygpath -w "$DEPOT_DIR")"
-  BAT_DIR="$DEP_DIR"
-  mkdir -p "$BAT_DIR"
-  TMPBAT="$BAT_DIR\\perfetto_build_win.bat"
 
-  # Build subset (trace_processor_shell). Demote C4996 (deprecated) to warning.
-  cat >"$TMPBAT" <<BAT
+  WIN_BAT_PATH="$(cygpath -w "$DEP_DIR/perfetto_build_win.bat")"
+  WIN_PS1_PATH="$(cygpath -w "$DEP_DIR/perfetto_run_win.ps1")"
+
+  # Batch script:
+  #  - Load MSVC env
+  #  - Bootstrap depot_tools (update_depot_tools) so pinned Python & gn/ninja are available
+  #  - Use vpython3 for install-build-deps (best effort)
+  #  - Use gn/ninja from depot_tools
+  cat > "$DEP_DIR/perfetto_build_win.bat" <<BAT
 @echo off
 setlocal enableextensions
-set VSWHERE=$VSWHERE
-for /f "usebackq delims=" %%I in (\`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath\`) do set VSINSTALL="%%~fI"
+set "VSWHERE=$VSWHERE_WIN"
+for /f "usebackq delims=" %%I in (\`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath\`) do set "VSINSTALL=%%~fI"
 if "%VSINSTALL%"=="" (
   echo ERROR: Visual Studio with C++ toolset not found.
   exit /b 1
 )
 call "%VSINSTALL%\\VC\\Auxiliary\\Build\\vcvars64.bat"
-set PATH=$WIN_DEPOT_DIR;%PATH%
-cd /d "$WIN_SRC"
 
-where python3 >nul 2>&1 && set PY=python3 || (
-  where py >nul 2>&1 && set PY=py -3 || set PY=python
+rem -- Ensure depot_tools on PATH and bootstrap it
+set "PATH=$WIN_DEPOT_DIR;%PATH%"
+set "DEPOT_TOOLS_UPDATE=1"
+set "DEPOT_TOOLS_WIN_TOOLCHAIN=0"
+
+if exist "%WIN_DEPOT_DIR%\\update_depot_tools.bat" (
+  call "%WIN_DEPOT_DIR%\\update_depot_tools.bat"
+) else (
+  call update_depot_tools
+)
+if errorlevel 1 (
+  echo ERROR: update_depot_tools failed.
+  exit /b 1
 )
 
+rem Sanity: ensure gn & vpython3 now exist
+where gn >nul 2>&1 || (echo ERROR: gn not found on PATH after bootstrap.& exit /b 1)
+where ninja >nul 2>&1 || (echo ERROR: ninja not found on PATH after bootstrap.& exit /b 1)
+where vpython3 >nul 2>&1 || (echo ERROR: vpython3 not found on PATH after bootstrap.& exit /b 1)
+
+cd /d "$WIN_SRC"
+
 echo.
-echo === install-build-deps (best effort) ===
-%PY% tools\\install-build-deps
+echo === install-build-deps (best effort via vpython3) ===
+vpython3 tools\\install-build-deps
 if errorlevel 1 (
   echo NOTE: install-build-deps returned non-zero. Continuing…
 )
 
 echo.
 echo === GN gen (Windows release) ===
-tools\\gn gen out\\win_release --args="is_debug=false target_os=\"win\" extra_cflags=\"/wd4996\" extra_cxxflags=\"/wd4996\""
+gn gen out\\win_release --args="is_debug=false target_os=\"win\" extra_cflags=\"/wd4996\" extra_cxxflags=\"/wd4996\""
 if errorlevel 1 exit /b 1
 
 echo.
 echo === Ninja build: trace_processor_shell ===
-tools\\ninja -C out\\win_release trace_processor_shell
+ninja -C out\\win_release trace_processor_shell
 if errorlevel 1 exit /b 1
 
 echo.
 echo Build completed. Artifacts in out\\win_release
+exit /b 0
 BAT
 
-  log "Running Windows build steps via: $TMPBAT"
-  cmd.exe /c "$TMPBAT"
+  # PowerShell runner: param first, forward exit code
+  cat > "$DEP_DIR/perfetto_run_win.ps1" <<'PS1'
+param([string]$BatPath)
+$ErrorActionPreference = 'Stop'
+& $BatPath
+exit $LASTEXITCODE
+PS1
+
+  log "Running Windows build steps via PowerShell runner:"
+  log "  BAT: $WIN_BAT_PATH"
+  log "  PS1: $WIN_PS1_PATH"
+
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$WIN_PS1_PATH" "$WIN_BAT_PATH"
 
   log "Done. Windows build artifacts in: $SRC/out/win_release"
-  log "Note: On Windows, this builds the supported subset (trace_processor_shell)."
+  log "Note: On Windows we build the supported subset (trace_processor_shell)."
   exit 0
 fi
+
 
 err "Unsupported OS: $(uname -s). This script targets macOS and Windows Git Bash."
 exit 2

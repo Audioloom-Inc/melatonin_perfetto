@@ -1,3 +1,4 @@
 [submodule "perfetto"]
 	path = perfetto
 	url = https://android.googlesource.com/platform/external/perfetto
+	ignore = dirty
