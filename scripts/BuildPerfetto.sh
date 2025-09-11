@@ -64,8 +64,8 @@ if is_macos; then
   "$PY" tools/install-build-deps
 
   OUT="out/host_release"
-  log "GN gen → $OUT (release, demote deprecated decls)"
-  tools/gn gen "$OUT" --args='is_debug=false extra_cflags="-Wno-error=deprecated-declarations" extra_cxxflags="-Wno-error=deprecated-declarations"'
+  log "GN gen → $OUT (release, demote specific warnings incl. old-style-cast)"
+  tools/gn gen "$OUT" --args='is_debug=false extra_cflags="-Wno-error=deprecated-declarations" extra_cxxflags="-Wno-error=deprecated-declarations -Wno-error=old-style-cast -Wno-old-style-cast"'
 
   TARGETS=( perfetto traced traced_probes trace_processor_shell traceconv )
   log "Building targets: ${TARGETS[*]}"
@@ -138,17 +138,4 @@ echo === Ninja build: trace_processor_shell ===
 tools\\ninja -C out\\win_release trace_processor_shell
 if errorlevel 1 exit /b 1
 
-echo.
-echo Build completed. Artifacts in out\\win_release
-BAT
-
-  log "Running Windows build steps via: $TMPBAT"
-  cmd.exe /c "$TMPBAT"
-
-  log "Done. Windows build artifacts in: $SRC/out/win_release"
-  log "Note: On Windows, this builds the supported subset (trace_processor_shell)."
-  exit 0
-fi
-
-err "Unsupported OS: $(uname -s). This script targets macOS and Windows Git Bash."
-exit 2
+ech
